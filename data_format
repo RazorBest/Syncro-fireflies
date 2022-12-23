@@ -1,0 +1,22 @@
+struct firefly {
+	uint id;
+	float x, y;
+	uint t1, t2;
+	bool light;
+};
+
+array<firefly, n>;
+
+uint batch_size;
+
+array<array<firefly, n>, batch_size>;
+
+First, we send the batch_size. Then we send
+the batches. The batches should be sent in maximum 5 seconds.
+After that, we send the batch_size again.
+
+A batch consinst of more moments. A moment consists of more ticks.
+A tick is represented by the array of fireflies.
+A moment specifies how many fireflies we have.
+The number of fireflies can't change in the same moment.
+TODO: We might set moment = tick.
