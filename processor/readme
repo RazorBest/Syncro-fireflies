@@ -1,0 +1,126 @@
+# Simularea licuricilor prin celular automata - Sisteme Multiprocesor
+
+## Rulare
+
+```
+$ make
+$ ./run.sh
+```
+
+Pentru a intelege cum sunt rulate binarele, uitati-va in run.sh.
+
+## Introducere
+
+Celular automata se refera la un set de probleme ce tin de procesare celulara:
+un sistem format dintr-o multime de puncte intr-un spatiu metric a caror
+stare evolueaza in timp. Modul in care evolueaza de timp este dat de niste
+legi de interactiune, de regula locale, in functie de starile anterioare. De
+obicei, legile de interactiune sunt simple. Dar comportamentul sistemului
+este unul complex si de multe ori, haotic.
+
+In cazul nostru, problema de celular automata arata astfel:
+    - licuricii sunt reprezentati prin puncte intr-un spatiu 2D
+    - fiecare licurici este o "celula" care are atribuita o stare
+    - o stare este o multime de caracteristici la un moment de timp, cum ar fi:
+        - perioada de aprindere a licuricelui
+        - perioada de stingere a licuricelui
+        - licuricele este aprins/stins
+        - counterul intern al licuricelui
+    - spatiul in care sunt organizate celulele se numeste grid
+    - starea gridului este dat de starile tuturor celulelor din grid
+    - starea gridului la momentul t = 0 este data ca ipoteza
+    - starea gridului la momentul t depinde strict de starea la momentul t - 1
+    - prin urmare, starea unei celule depinde doar de starea anteriora a celulelor
+    - starea unei celule depinde doar de starile vecinilor ei si a ei insasi
+    - doua celule sunt vecine daca distanta dintre ele este mai mica decat o constanta data
+    - starea celululei poate fi vazuta ca o functie de timp c[t] = f(c[t-1], V, t), 
+        unde V este multimea vecinilor lui c
+
+Problema consta in aflarea starii gridului dupa un numar de momente de timp.
+
+Cum fiecare stare a gridului este strans legata de starea anterioara, simularea
+momentelor de timp nu se poate paraleliza. Este greu sa aflam starea la momentul
+t fara sa stim starea la momentul t-1.
+
+Scopul lateral al jocului este ca licuricii sa ajunga sa se aprinda si sa se stinga
+in acelasi timp.
+
+## Implementare generala
+
+Aceasta sectiune se refera la decizii generale de implementare care se aplica
+pentru toate sursele.
+
+Celulele au fost reprezentate prin niste structuri C. Au fost puse intr-o structura
+de date de tip matrice, care reprezenta gridul. Legatura dintre celula si pozitia
+in matrice este coordonata celulei 2D. Un grid este o matrice de de arii.
+O arie este un patrat 2D. Toate ariile din grid au aceeasi dimensiune si sunt
+lipite una de alta. Astfel, o celula din grid se va afla intr-una din arii.
+Dimensiunea ariilor a fost aleasa astfel incat o celula sa aiba vecinii in
+cel mult ariile adiacente din grid (pe cele 8 directii). Astfel, pentru a
+calcula starea unei celule dintr-o arie, e de ajuns sa ne uitam in ariile adiacente.
+
+Un grid are in memorie strea curenta si starea viitoare. Atunci cand se face
+un calcul, se updateaza starea viitoare in functie de starea curenta, si
+dupa ce se updateaza toate ariile, se interschimba starile. Aceasta separare
+intre curent si viitor ne va ajuta la paralelizarea pe threaduri. Intrucat
+mai multe threaduri vor putea scrie in starea viitoare fara sa fie afectate.
+
+Aceasta organizare a celulelor in arii a fost foarte folositoare pentru paralelizare.
+Intrucat, ariile erau organizate 2D, iar interactiune intre arii se facea doar
+cu vecinii, o organizare asemanatoare a fost facuta si intre nodurile de MPI.
+
+## Paralelizare
+
+Am implementat problema in urmatoarele moduri:
+    - sequential
+    - openmp
+    - MPI
+    - pthread
+    - MPI + openmp
+
+Fiecare implementare e intr-un folder separat.
+
+## Openmp
+
+Fiecare linie din grid a fost considerata un task. Atfel, cu un parallel for
+s-au calculat in paralel liniile starii viitoare.
+
+## MPI
+
+Pentru a paraleliza cu MPI, am gandit o arhitectura generica, care a putut
+fi folosita la pthread si MPI+openmp.
+
+Fiecarui nod/worker i s-a atribuit un subgrid din gridul mare. Adica, un
+dreptunghi format din mai multe arii. Din acel subgrid, workerul updata
+doar ariile care nu erau la margine. Subgridurile workerilor se pot suprapune.
+Daca doua subgriduri se suprapun, inseamna ca workerii asociati sunt vecini.
+Asta inseamna ca la fiecare moment de timp, un worker, pentru a-si updata
+marginile subgridului, va vorbi cu workerii vecini.
+
+Subgridurile sunt calculate astfel incat un subgrid sa fie adiacent cu alte
+8 subgriduri (pe cele 8 directii cardinale). Acesta nu este mereu cazul,
+intrucat subgridurile de la margini vor fi adiacente cu mai putine subgriduri.
+Dar este mai simplu de explicat.
+
+Astfel, fiecare worker are cel mult 8 workeri vecini. Acesti workeri vecini
+sunt singurii cu care workerul va comunica pe parcursul simularii.
+
+Astfel, avem urmatorul flow:
+    1. master trimite pozitiile subgridurilor pentru fiecare worker
+    2. master trimite informatiile despre vecini fiecarui worker
+    3. master trimite starea subgridurilor pentru fiecare worker
+    4. master trimite un task care cere simularea pentru un nr dat de cicli
+    5. fiecare worker simuleaza un ciclu in propriul lui subgrid
+    6. workerii vecini comunica intre ei pentru a-si updata starile din subgriduri
+    7. se repeta pasul 5 pana se atinge numarul dorit de ciclii
+    8. workerii trimit starile subgridurilor inapoi la master
+    9. master repeta pasul 4 sau se opreste
+
+Un flow asemanator avem si la pthreads. Fiecare thread lucreaza la un subgrid.
+Numai ca nu mai este nevoie de comunicare.
+
+## Hybrid
+
+Varianta hibrida este asemanatoare cu MPI. Pentru ca fiecare worker are de
+lucrat la un subgrid, acel subgrid poate fi impartit si el in mai multe
+subgriduri. Asta ne permite sa paralelizam taskul la nivel de thread
